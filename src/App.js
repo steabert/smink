@@ -4,7 +4,8 @@ import './App.css';
 
 class App extends Component {
   state = {
-    pos: [3333, 3333]
+    pos1: [3333, 3333],
+    pos2: [2000, 5000]
   }
 
   onUpdate = (pos) => {
@@ -22,8 +23,9 @@ class App extends Component {
         <p className="App-intro">
           To get started, edit <code>src/App.js</code> and save to reload.
         </p>
-        <Svg width={400} height={300} coordinateSystem={[[0, 9999], [0, 9999]]}>
-          <SvgCircle2 pos={this.state.pos} onUpdate={this.onUpdate} />
+        <Svg width={400} height={300} userBasis={[[0, 0], [9999, 9999]]} transform={transform}>
+          <SvgCircle pos={this.state.pos1} onUpdate={(pos) => this.setState({pos1: pos})} />
+          <SvgCircle pos={this.state.pos2} onUpdate={(pos) => this.setState({pos2: pos})} />
           <rect x={5} y={5} width={10} height={10} />
         </Svg>
       </div>
@@ -31,26 +33,81 @@ class App extends Component {
   }
 }
 
+/**
+ * Set up basis transforms.
+ * The svg basis is defined as:
+ *
+ * (0,0)      (w,0)
+ *   +----------+
+ *   |          |
+ *   |          |
+ *   |          |
+ *   +----------+
+ * (0,h)      (w,h)
+ *
+ * where the top left corner is the origin, and the bottom
+ * right corner corresponds to the width and height of the
+ * svg element.
+ *
+ * A user basis can be defined to allow the use of
+ * custom coordinates instead of those based on
+ * width and height of the svg element.
+ * The basis that can be chosen is limited to a
+ * rectangular overlay, defined by two outer points:
+ *
+ * (x0,y0)    (x1,y0)
+ *    +----------+
+ *    |          |
+ *    |          |
+ *    |          |
+ *    +----------+
+ * (x0,y1)    (x1,y1)
+ *
+ * The user basis is passed as a prop with data
+ * [[x0, y0], [x1, y1]], and if not specified the default
+ * corresponds to [[0, 1], [1, 0]].
+ */
+
+const getSvgBasis = (w, h, [[x0, y0], [x1, y1]]) => {
+  return [
+    [w / (x1 - x0),             0, w * x0 / (x0 - x1)],
+    [            0, h / (y1 - y0), h * y0 / (y0 - y1)],
+    [            0,             0,                  1]
+  ];
+}
+
+const getUserBasis = (w, h, [[x0, y0], [x1, y1]]) => {
+  return [
+    [(x1 - x0) / w,             0, x0],
+    [            0, (y1 - y0) / h, y0],
+    [            0,             0,  1]
+  ];
+}
+
+const multiply = (A, [x, y]) => {
+  return [
+    A[0][0] * x + A[0][1] * y + A[0][2],
+    A[1][0] * x + A[1][1] * y + A[1][2]
+  ];
+}
+
 const SminkContext = React.createContext('smink');
 
 class Svg extends React.Component {
-  toPixels = ([x, y]) => {
-    return [
-      (x / this.props.coordinateSystem[0][1]) * this.props.width,
-      (y / this.props.coordinateSystem[1][1]) * this.props.height
-    ];
+  static defaultProps = {
+    userBasis: [[0, 1], [1, 0]]
   }
-
-  toCoords = ([x, y]) => {
-    return [
-      (x / this.props.width) * this.props.coordinateSystem[0][1],
-      (y / this.props.height) * this.props.coordinateSystem[1][1]
-    ];
-  }
-
   render () {
+    const svgBasisTransfrom = getSvgBasis(
+      this.props.width, this.props.height, this.props.userBasis
+    );
+    const userBasisTransform = getUserBasis(
+      this.props.width, this.props.height, this.props.userBasis
+    );
+    const toSvgBasis = (p) => multiply(svgBasisTransfrom, p);
+    const toUserBasis = (p) => multiply(userBasisTransform, p);
     return (
-      <SminkContext.Provider value={{toPixels: this.toPixels, toCoords: this.toCoords}}>
+      <SminkContext.Provider value={{toSvgBasis, toUserBasis}}>
         <svg width={this.props.width} height={this.props.height} style={{border: 'solid red'}}>
           {this.props.children}
         </svg>
@@ -59,40 +116,21 @@ class Svg extends React.Component {
   }
 }
 
-const WithSminkTransforms = (Component) => {
+const WithBasisTransforms = (Component) => {
+  // Could be replaced with a getDerivedStateFromProps inside the
+  // component itself, thus avoiding a re-render.
   let id = 0;
 
   return (props) => {
     return (
       <SminkContext.Consumer>
-        {({toPixels, toCoords}) => {
+        {({toSvgBasis, toUserBasis}) => {
           return (
-            <Component key={id++} {...props} toCoords={toCoords} toPixels={toPixels} />
-          );
-        }}
-      </SminkContext.Consumer>
-    );
-  }
-}
-
-class SvgCircle extends React.Component {
-  constructor (props) {
-    super(props)
-    this.id = 0;
-  }
-
-  render () {
-    return (
-      <SminkContext.Consumer>
-        {({toPixels, toCoords}) => {
-          const pxPos = toPixels(this.props.pos);
-
-          return (
-            <Circle
-              pos={pxPos}
-              key={this.id++}
-              toCoords={toCoords}
-              onUpdate={this.props.onUpdate}
+            <Component
+              key={id++}
+              {...props}
+              toSvgBasis={toSvgBasis}
+              toUserBasis={toUserBasis}
             />
           );
         }}
@@ -103,7 +141,7 @@ class SvgCircle extends React.Component {
 
 class Circle extends React.Component {
   state = {
-    pos: this.props.toPixels(this.props.pos)
+    pos: this.props.toSvgBasis(this.props.pos)
   }
 
   handleMouseDown = (e) => {
@@ -123,16 +161,18 @@ class Circle extends React.Component {
 
   handleMouseUp = (e) => {
     document.removeEventListener('mousemove', this.handleMouseMove);
-    const coords = this.props.toCoords(this.state.pos);
+    const coords = this.props.toUserBasis(this.state.pos);
     this.props.onUpdate(coords)
   }
 
   render () {
+    const [x, y] = this.state.pos;
+
     return (
       <circle
         r={10}
-        cx={this.state.pos[0]}
-        cy={this.state.pos[1]}
+        cx={x}
+        cy={y}
         onMouseDown={this.handleMouseDown}
         onMouseUp={this.handleMouseUp}
       />
@@ -140,6 +180,6 @@ class Circle extends React.Component {
   }
 }
 
-const SvgCircle2 = WithSminkTransforms(Circle);
+const SvgCircle = WithBasisTransforms(Circle);
 
 export default App;
